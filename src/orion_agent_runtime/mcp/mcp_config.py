@@ -22,12 +22,4 @@ MCP_SERVERS = [
         ],
         env=None,
     ),
-    MCPServerConfig(
-        name="git",
-        command="uvx",
-        args=[
-            "mcp-server-git",
-        ],
-        env=None,
-    ),
 ]
