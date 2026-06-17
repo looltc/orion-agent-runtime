@@ -1,0 +1,19 @@
+[project]
+name = "orion-agent-runtime"
+version = "0.1.0"
+description = "A Python runtime package for Orion agent projects."
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "MIT" }
+authors = [ { name = "Your Name", email = "you@example.com" } ]
+dependencies = ["pydantic>=2.0", "openai>=1.0", "PyYAML>=6.0"]
+
+[project.optional-dependencies]
+dev = ["pytest>=8.0", "pytest-cov", "black", "isort"]
+
+[project.urls]
+"Source" = "https://github.com/your-org/orion-agent-runtime"
+
+[build-system]
+requires = ["setuptools>=61.0", "wheel"]
+build-backend = "setuptools.build_meta"
