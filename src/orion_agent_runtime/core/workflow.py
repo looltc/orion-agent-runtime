@@ -17,7 +17,9 @@ MAX_REPLANS = 2
 memory = MemoryManager()
 
 
-def run_agent(user_input: str, run_id: str, user_id: str, mcp_manager: MCPManager) -> AgentState:
+def run_agent(
+    user_input: str, run_id: str, user_id: str, mcp_manager: MCPManager = None
+) -> AgentState:
     state = load_state(run_id)
 
     if state is None:
@@ -42,7 +44,7 @@ def run_agent(user_input: str, run_id: str, user_id: str, mcp_manager: MCPManage
                 metadata={"run_id": run_id, "user_input": user_input},
             )
             return state
-        
+
         # 高层复合任务，直接调用技能执行器
         if plan.need_skill:
             skill_result = execute_skill(
