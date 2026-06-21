@@ -4,6 +4,7 @@ from pathlib import Path
 from typing import Any, Optional
 from pydantic import BaseModel, Field
 from orion_agent_runtime.core.storage import load_state, STATE_DIR
+from orion_agent_runtime.trace.metrics_collector import collect_metrics, format_metrics
 from orion_agent_runtime.trace.trace_inspector import inspect_trace, format_report
 
 # 运行时数据检查工具，提供命令行接口查看和导出 Agent 运行时的状态和调用轨迹。
@@ -127,6 +128,12 @@ def inspect_run(run_id: str, show_full: bool = False) -> None:
     print(f"error: {state.error}")
     print("=" * 80)
 
+    # P5：运行指标（迭代数、成功率、token 消耗、收敛情况）
+    print("METRICS")
+    print("-" * 80)
+    print(format_metrics(collect_metrics(state)))
+    print("-" * 80)
+
     report = inspect_trace(state)
     print("TRACE REPORT")
     print("-" * 80)
@@ -161,6 +168,20 @@ def inspect_run(run_id: str, show_full: bool = False) -> None:
             print("  raw_arguments:", _pretty(tr.raw_arguments))
             print("  normalized_arguments:", _pretty(tr.normalized_arguments))
             print("  result:", tr.result)
+
+    # P5：ReAct 轨迹（thought→action→observation）
+    if state.react_traces:
+        print("-" * 80)
+        print("REACT TRACES")
+        print("-" * 80)
+        for rt in state.react_traces:
+            print(f"[iter {rt.iteration}] action={rt.action_type} tool={rt.tool}")
+            if rt.thought:
+                print(f"  thought: {rt.thought}")
+            print(f"  args: {rt.arguments}")
+            print(f"  observation: {rt.observation}")
+            if rt.answer:
+                print(f"  answer: {rt.answer}")
 
     print("=" * 80)
 

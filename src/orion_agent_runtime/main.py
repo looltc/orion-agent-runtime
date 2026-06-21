@@ -30,27 +30,31 @@ def main():
     user_id = "orion"
     mcp_manager = bootstrap_mcp()
 
-    while True:
-        user_input = input("> ").strip()
-        if not user_input:
-            continue
-        if user_input in {"exit", "quit"}:
-            break
+    try:
+        while True:
+            user_input = input("> ").strip()
+            if not user_input:
+                continue
+            if user_input in {"exit", "quit"}:
+                break
 
-        run_id = str(uuid.uuid4())[:8]
-        state = run_agent(user_input, run_id, user_id, mcp_manager)
+            run_id = str(uuid.uuid4())[:8]
+            state = run_agent(user_input, run_id, user_id, mcp_manager)
 
-        print(f"run_id: {run_id}")
-        print(f"status: {state.status}")
+            print(f"run_id: {run_id}")
+            print(f"status: {state.status}")
 
-        if state.status == "done":
-            print(f"result: {state.final_output}")
-        else:
-            print(f"error: {state.error}")
-            report = inspect_trace(state)
-            print("=== trace_report: ===")
-            print(format_report(report))
-            print("=" * 20)
+            if state.status in {"done", "goal_achieved"}:
+                print(f"result: {state.final_output}")
+            else:
+                print(f"error: {state.error}")
+                report = inspect_trace(state)
+                print("=== trace_report: ===")
+                print(format_report(report))
+                print("=" * 20)
+    finally:
+        # P3：优雅关闭 MCP 长连接，避免子进程残留
+        asyncio.run(mcp_manager.close_all())
 
 
 if __name__ == "__main__":
