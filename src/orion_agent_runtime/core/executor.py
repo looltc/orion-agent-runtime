@@ -1,5 +1,8 @@
 from typing import Any, Dict
 import asyncio
+import inspect
+import time
+import threading
 
 from pydantic import ValidationError
 
@@ -7,6 +10,7 @@ from orion_agent_runtime.core.idempotency import get_cache
 from orion_agent_runtime.core.models import PlanStep, Observation, ExecutionTrace
 from orion_agent_runtime.utils.normalize import normalize_arguments, normalize_tool_name
 from orion_agent_runtime.tools.registry import get_tool
+from orion_agent_runtime.reporter import get_reporter
 from orion_agent_runtime.audit.audit_log import log_event
 from orion_agent_runtime.safety.guardrails import (
     ApprovalAction,
@@ -16,6 +20,35 @@ from orion_agent_runtime.safety.guardrails import (
 )
 
 # 强校验 + 强容错 + 可追踪 + 幂等(P3) executor + 审计(P5)
+
+# ---- 共享事件循环（解决 asyncio.run() 每次创建新 loop 导致的跨循环问题）----
+# Playwright 对象（_page, _connection）绑定创建时的事件循环；若每次 tool call
+# 都用 asyncio.run() 开新 loop，后续调用会在新 loop 上使用旧 loop 的对象，
+# 触发 "'NoneType' object has no attribute 'send'" 等内部断连错误。
+# 本模块维护一个进程级持久事件循环，所有 async tool handler 共享同一 loop。
+
+_shared_loop: asyncio.AbstractEventLoop | None = None
+_shared_loop_lock = threading.Lock()
+
+
+def _get_shared_loop() -> asyncio.AbstractEventLoop:
+    """获取或创建进程级共享事件循环。线程安全。"""
+    global _shared_loop
+    with _shared_loop_lock:
+        if _shared_loop is None or _shared_loop.is_closed():
+            _shared_loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(_shared_loop)
+        return _shared_loop
+
+
+def _run_async_on_shared_loop(coro):
+    """在共享事件循环上运行协程并阻塞等待结果。
+
+    与 asyncio.run() 的关键区别：复用同一 loop，保证 Playwright 等有状态
+    对象在多次 tool call 间不因跨循环而失效。
+    """
+    loop = _get_shared_loop()
+    return loop.run_until_complete(coro)
 
 
 class ToolExecutionError(Exception):
@@ -83,8 +116,18 @@ def execute_step(
         trace.normalized_tool = tool_name
 
         normalized_args = normalize_arguments(raw_arguments)
+        # 仅对 required 字段用 previous_result 回填，不碰 optional 字段
+        # （否则 browser_get_page_text 的 selector=None 会被填成 7000 字符的 snapshot 文本）
+        spec = get_tool(tool_name)
+        if spec and spec.origin == "local" and spec.args_model:
+            optional_fields = {
+                name for name, field in spec.args_model.model_fields.items()
+                if not field.is_required()
+            }
+        else:
+            optional_fields = set()
         for k, v in list(normalized_args.items()):
-            if v is None:
+            if v is None and k not in optional_fields:
                 normalized_args[k] = previous_result
 
         trace.normalized_arguments = dict(normalized_args)
@@ -112,8 +155,6 @@ def execute_step(
                 },
             )
             return obs, trace
-
-        spec = get_tool(tool_name)
 
         if spec.origin == "local":
             try:
@@ -180,7 +221,28 @@ def execute_step(
                     obs = Observation(step=step_index, tool=raw_tool, result=None)
                     return obs, trace
 
+            # Reporter: 工具调用开始
+            t_start = time.time()
+            get_reporter().tool_call_start(tool_name, normalized_args, step_index)
             result = spec.handler(**validated_args.model_dump())
+            # 若 local handler 是 coroutine（async def），用共享事件循环桥接
+            # 复用同一个 loop，避免 Playwright/Browser 对象因跨循环断连
+            # （asyncio.run() 每次创建新 loop，导致绑定旧 loop 的 _page 对象失效）
+            if inspect.isawaitable(result):
+                result = _run_async_on_shared_loop(result)
+
+            # 检测工具返回的字符串错误（如 "Error: navigate failed"）
+            if isinstance(result, str) and result.startswith("Error:"):
+                trace.success = False
+                trace.error = result
+
+                log_event(
+                    run_id=run_id,
+                    event_type="tool_call_failed",
+                    data={"tool": tool_name, "error": result, "step_index": step_index},
+                )
+                obs = Observation(step=step_index, tool=raw_tool, result=result)
+                return obs, trace
 
         elif spec.origin == "mcp":
             if mcp_manager is None:
@@ -246,6 +308,9 @@ def execute_step(
 
         trace.result = result
         trace.success = True
+        # Reporter: 工具调用完成
+        elapsed = (time.time() - t_start) * 1000
+        get_reporter().tool_call_end(tool_name, step_index, True, result, None, elapsed)
         # 成功结果入缓存：重试时直接命中，副作用不重复
         cache.put(call_id, True, result, None)
 
@@ -266,6 +331,9 @@ def execute_step(
     except Exception as e:
         trace.success = False
         trace.error = str(e)
+        # Reporter: 工具调用失败
+        elapsed = (time.time() - t_start) * 1000 if 't_start' in dir() else 0
+        get_reporter().tool_call_end(raw_tool if 'raw_tool' in dir() else "?", step_index, False, None, str(e), elapsed)
 
         # ---- P5: 审计日志 - 工具调用失败 ----
         log_event(

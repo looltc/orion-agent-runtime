@@ -37,6 +37,8 @@ def _call_plan_llm(prompt: str, schema_name: str = "plan") -> Plan:
     response = client.chat.completions.create(
         model=MODEL_NAME,
         temperature=0,
+        max_tokens=4096,  # plan 可能较复杂
+        timeout=60,
         response_format={
             "type": "json_schema",
             "json_schema": {
@@ -67,7 +69,7 @@ def _call_plan_llm(prompt: str, schema_name: str = "plan") -> Plan:
 
 
 def planner(user_input: str, user_id: str) -> Plan:
-    tool_catalog = build_tool_catalog()
+    tool_catalog = build_tool_catalog(trimmed=True)
     related_memories = memory_manager.recall_related(
         user_id=user_id,
         query=user_input,

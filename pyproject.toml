@@ -17,6 +17,9 @@ dependencies = [
 
 [project.optional-dependencies]
 dev = ["pytest>=8.0", "pytest-cov", "black", "isort"]
+# V2 浏览器能力（真实 Playwright 实现，ORION_BROWSER_MODE=real 时启用）
+# 安装后还需运行 `playwright install chromium` 下载浏览器
+browser = ["playwright>=1.40"]
 
 [project.scripts]
 orion = "orion_agent_runtime.main:main"

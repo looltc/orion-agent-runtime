@@ -28,10 +28,11 @@ from orion_agent_runtime.core.models import (
 from orion_agent_runtime.core.storage import save_state
 from orion_agent_runtime.llm_provider import get_llm_client
 from orion_agent_runtime.tools.registry import build_tool_catalog
+from orion_agent_runtime.reporter import get_reporter
 from orion_agent_runtime.audit.audit_log import log_event
 
 # 红线：每个循环都有明确的最大迭代上限，永不省略。
-MAX_ITERATIONS = 12
+MAX_ITERATIONS = 99
 # 观察序列超过此阈值时触发历史压缩
 HISTORY_COMPRESS_THRESHOLD = 8
 
@@ -64,8 +65,8 @@ def _format_observation_history(state: AgentState) -> str:
     for i, obs in enumerate(state.observations, 1):
         result_str = str(obs.result)
         # 截断超长观察，避免单条吃掉上下文
-        if len(result_str) > 500:
-            result_str = result_str[:500] + "...(截断)"
+        if len(result_str) > 1000:
+            result_str = result_str[:1000] + "...(截断)"
         lines.append(f"  第{i}轮 [{obs.tool}]: {result_str}")
     return "\n".join(lines)
 
@@ -85,6 +86,8 @@ def _call_react_llm(prompt: str) -> ReactAction:
     response = client.chat.completions.create(
         model=model_name,
         temperature=0,
+        max_tokens=2048,
+        timeout=60,
         response_format={
             "type": "json_schema",
             "json_schema": {
@@ -143,9 +146,20 @@ def _react_decide(state: AgentState) -> ReactAction:
     """根据当前状态让 LLM 决策下一步。"""
     tool_catalog = build_tool_catalog()
 
+    # 将 planner 生成的步骤作为参考上下文注入
+    plan_context = ""
+    if state.plan:
+        plan_steps = []
+        for i, s in enumerate(state.plan):
+            plan_steps.append(f"  {i+1}. {s.tool}: {s.arguments}")
+        plan_context = "\n".join(plan_steps)
+
     prompt = f"""
         【目标】
         {state.goal or state.user_input}
+
+        【建议执行计划】
+        {plan_context or '(无预设计划)'}
 
         【验收标准】
         {chr(10).join('- ' + c for c in state.success_criteria) or '(未指定)'}
@@ -216,6 +230,7 @@ def run_react_loop(state: AgentState, mcp_manager=None) -> AgentState:
             arguments=action.arguments,
         )
         state.react_traces.append(trace)
+        get_reporter().react_iteration(iteration + 1, action.thought or "", action.type, action.tool)
 
         # ---- P5: 审计日志 - ReAct 决策 ----
         log_event(
@@ -270,11 +285,65 @@ def run_react_loop(state: AgentState, mcp_manager=None) -> AgentState:
         trace.observation = obs.result
         trace.arguments = exec_trace.normalized_arguments
 
+        # 动作停滞检测：最近 N 步只在 2 个工具间交替 → 死循环
+        _tool_window_key = action.tool
+        if not hasattr(state, "_tool_history"):
+            state._tool_history = []
+        state._tool_history.append(_tool_window_key)
+        # 检测：最近 6 步是否只有 2 个不同工具在交替
+        if len(state._tool_history) >= 6:
+            recent = state._tool_history[-6:]
+            unique = list(dict.fromkeys(recent))  # 保持顺序去重
+            if len(unique) == 2:
+                a, b = unique
+                expected = [a, b] * 3
+                if recent == expected[:len(recent)]:
+                    trace.observation = (
+                        f"{obs.result}\n\n[SYSTEM] 检测到死循环: {a}→{b} 交替重复。"
+                        "当前页面没有新进展，请直接输出 finish，不要再调用工具。"
+                    )
+        # 单工具连击强制终止
+        if not hasattr(state, "_act_streak"):
+            state._act_streak = {"t": "", "n": 0}
+        if state._act_streak["t"] == _tool_window_key:
+            state._act_streak["n"] += 1
+        else:
+            state._act_streak = {"t": _tool_window_key, "n": 1}
+        if state._act_streak["n"] >= 10:
+            state.final_output = f"{_tool_window_key} 连续 {state._act_streak['n']} 次无进展"
+            state.status = "failed"
+            state.error = f"action streak: {_tool_window_key} x{state._act_streak['n']}"
+            save_state(state, state.run_id)
+            return state
+
         # 工具失败：把错误作为观察回灌给 LLM，让它自行纠错（ReAct 的自我修正）
         if not exec_trace.success:
             trace.observation = f"TOOL_ERROR: {exec_trace.error}"
+            # 工具级停滞检测：同一工具+参数连续失败超过阈值，强制提示切换策略
+            _tool_failure_key = f"{action.tool}|{str(action.arguments)}"
+            if not hasattr(state, "_tool_failure_streak"):
+                state._tool_failure_streak = {"key": "", "count": 0}
+            if state._tool_failure_streak["key"] == _tool_failure_key:
+                state._tool_failure_streak["count"] += 1
+            else:
+                state._tool_failure_streak = {"key": _tool_failure_key, "count": 1}
+            if state._tool_failure_streak["count"] >= 3:
+                trace.observation += (
+                    f"\n\n⚠️ 该工具已连续失败 {state._tool_failure_streak['count']} 次，"
+                    "请务必更换方法（改用不同的 selector、用 browser_evaluate_js 直接操作 DOM、"
+                    "或尝试其他交互方式），不要再重复调用同一参数。"
+                )
+            if state._tool_failure_streak["count"] >= 5:
+                state.final_output = f"工具 {action.tool} 连续失败 5 次，中断循环"
+                state.status = "failed"
+                state.error = f"tool failure streak: {action.tool} failed {state._tool_failure_streak['count']} times"
+                save_state(state, state.run_id)
+                return state
         else:
             state.previous_result = obs.result
+            # 成功后重置失败计数
+            if hasattr(state, "_tool_failure_streak"):
+                state._tool_failure_streak = {"key": "", "count": 0}
 
         # 历史压缩（防上下文爆炸）
         _compress_history(state)

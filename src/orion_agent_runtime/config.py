@@ -14,6 +14,13 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Optional, Tuple
 
+# 自动加载项目根目录 .env 文件（若存在）
+from dotenv import load_dotenv
+_project_root = Path(__file__).resolve().parents[2]  # src/orion_agent_runtime → 项目根
+_env_file = _project_root / ".env"
+if _env_file.exists():
+    load_dotenv(_env_file)
+
 
 @dataclass(frozen=True)
 class LLMConfig:
@@ -41,6 +48,18 @@ class Config:
 
     # MCP filesystem 允许访问的目录；为空则不配置 filesystem server
     mcp_filesystem_dirs: Tuple[str, ...] = ()
+
+    # ---- V2 架构演进配置（设计文档 V2）----
+    # 运行时模式：v1=旧同步 workflow，v2=事件驱动 Runtime
+    runtime_mode: str = "v1"
+    # 浏览器能力模式：mock=内存模拟（默认，避免无浏览器环境失败），real=真实 Playwright
+    browser_mode: str = "mock"
+    # 浏览器是否无头模式（real 模式时有效）
+    browser_headless: bool = True
+    # 浏览器操作超时时间（毫秒）
+    browser_timeout: int = 30000
+    # 事件流持久化目录（EventBus replay 用），默认在 runtime_state/events 下
+    event_store_dir: Path = field(default_factory=lambda: Path("./runtime_state/events"))
 
     @property
     def llm(self) -> LLMConfig:
@@ -97,5 +116,12 @@ def get_config(reload: bool = False) -> Config:
             checker_llm_model=_env("ORION_CHECKER_LLM_MODEL", ""),
             runtime_state_dir=Path(_env("ORION_RUNTIME_STATE_DIR", "./runtime_state")),
             mcp_filesystem_dirs=_load_mcp_filesystem_dirs(),
+            runtime_mode=_env("ORION_RUNTIME", "v1").lower(),
+            browser_mode=_env("ORION_BROWSER_MODE", "mock").lower(),
+            browser_headless=_env_bool("ORION_BROWSER_HEADLESS", True),
+            browser_timeout=int(_env("ORION_BROWSER_TIMEOUT", "30000")),
+            event_store_dir=Path(
+                _env("ORION_EVENT_STORE_DIR", "./runtime_state/events")
+            ),
         )
     return _cached
