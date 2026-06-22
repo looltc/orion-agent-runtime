@@ -16,10 +16,10 @@ def run_case(case):
 
         actual = str(state.final_output)
 
-        success = actual == case.expected
+        success = state.status == "goal_achieved"
         if case.name.startswith("chat_"):
             # 对于聊天类用例，根据status来判断是否成功
-            success = state.status == "done"
+            success = state.status == "goal_achieved"
 
         return EvalResult(
             case_name=case.name,

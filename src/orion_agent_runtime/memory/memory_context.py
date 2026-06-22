@@ -11,7 +11,6 @@ def format_memories_for_prompt(memories: List[MemoryHit]) -> str:
     lines = []
     for i, hit in enumerate(memories, start=1):
         item = hit.item
-        lines.append(
-            f"{i}. score={hit.score:.3f} | kind={item.kind} | content={item.content} | metadata={item.metadata}"
-        )
+        content = str(item.content)[:200]  # 截断记忆内容
+        lines.append(f"{i}. [{item.kind}] {content}")
     return "\n".join(lines)

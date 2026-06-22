@@ -17,6 +17,7 @@ from orion_agent_runtime.mcp.mcp_manager import MCPManager
 from orion_agent_runtime.memory.memory import MemoryManager
 from orion_agent_runtime.memory.memory_summarizer import build_task_summary
 from orion_agent_runtime.audit.audit_log import log_event
+from orion_agent_runtime.reporter import get_reporter
 
 # 状态流转 + Loop 收敛控制 + ReAct 内循环路由。
 #
@@ -34,6 +35,7 @@ MAX_REPLANS = 2
 MAX_GOAL_EVALUATIONS = 3
 # 回滚开关：checker 误判率高时可关闭，退回旧的"步骤跑完即 done"行为。
 VERIFY_ON_FINISH = True
+# P2：是否启用 ReAct 内循环。设为 False 回退到 Plan→Execute 模式（P1 行为）。
 # P2：是否启用 ReAct 内循环。设为 False 回退到 Plan→Execute 模式（P1 行为）。
 USE_REACT_LOOP = True
 
@@ -174,11 +176,13 @@ def run_agent(
             "user_input": user_input,
         },
     )
+    get_reporter().task_start(user_input, run_id)
 
     state = load_state(run_id)
 
     if state is None:
         state = AgentState(run_id=run_id, user_input=user_input)
+        get_reporter().status("正在分析任务...")
         plan = planner(user_input, user_id)
         state.plan = plan.steps
         # P1：保存可验证目标与验收标准（外部状态即真相源，不依赖上下文窗口）
@@ -199,6 +203,7 @@ def run_agent(
                 "need_skill": plan.need_skill,
             },
         )
+        get_reporter().plan_generated(plan.goal, len(plan.steps))
 
         # 普通问答，直接结束（这类任务 success_criteria 通常即"回答了问题"，
         # 仍可走验证；但为保持旧行为，普通问答直通后由验证环节把关）

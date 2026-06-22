@@ -50,10 +50,8 @@ def list_tools() -> List[ToolSpec]:
     return list(_TOOL_REGISTRY.values())
 
 
-def build_tool_catalog() -> dict:
-    """
-    给 LLM / structured output / tool calling 用的统一工具描述。
-    """
+def build_tool_catalog(trimmed: bool = False) -> dict:
+    """给 LLM 用的工具目录。trimmed=True 只保留名字和描述，用于 planner 压缩 prompt。"""
     catalog = []
     for spec in list_tools():
         if spec.origin == "local":
@@ -61,14 +59,14 @@ def build_tool_catalog() -> dict:
         else:
             parameters = spec.input_schema or {}
 
-        catalog.append(
-            {
-                "name": spec.name,
-                "description": spec.description,
-                "origin": spec.origin,
-                "parameters": parameters,
-                "server_name": spec.server_name,
-                "remote_name": spec.remote_name,
-            }
-        )
+        entry = {
+            "name": spec.name,
+            "description": spec.description,
+        }
+        if not trimmed:
+            entry["origin"] = spec.origin
+            entry["parameters"] = parameters
+            entry["server_name"] = spec.server_name
+            entry["remote_name"] = spec.remote_name
+        catalog.append(entry)
     return {"tools": catalog}

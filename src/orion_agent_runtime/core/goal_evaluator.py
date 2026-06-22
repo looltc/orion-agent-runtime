@@ -33,7 +33,8 @@ def _format_observations(state: AgentState) -> str:
         return "(无)"
     lines = []
     for i, obs in enumerate(state.observations, 1):
-        lines.append(f"  步骤{i} [{obs.tool}]: {obs.result}")
+        text = str(obs.result)[:2000]  # 截断，给足够上下文
+        lines.append(f"  步骤{i} [{obs.tool}]: {text}")
     return "\n".join(lines)
 
 
@@ -43,6 +44,8 @@ def _call_checker_llm(prompt: str) -> VerificationResult:
     response = client.chat.completions.create(
         model=model_name,
         temperature=0,
+        max_tokens=2048,
+        timeout=60,  # 防止模型卸载后无限等待
         response_format={
             "type": "json_schema",
             "json_schema": {

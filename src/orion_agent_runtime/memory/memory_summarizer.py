@@ -11,9 +11,15 @@ def build_task_summary(state: AgentState) -> str:
     ]
 
     if state.observations:
+        # 只取关键步骤摘要，每条截断，避免记忆膨胀
+        key_steps = [o for o in state.observations
+                     if o.tool not in ("browser_snapshot", "browser_get_page_text")]
+        if not key_steps:
+            key_steps = state.observations[:5]
         obs_text = "; ".join(
-            [f"step{obs.step}:{obs.tool}={obs.result}" for obs in state.observations]
+            f"step{obs.step}:{obs.tool}={str(obs.result)[:100]}"
+            for obs in key_steps[:10]
         )
-        parts.append(f"执行过程: {obs_text}")
+        parts.append(f"关键步骤: {obs_text}")
 
     return " | ".join(parts)
